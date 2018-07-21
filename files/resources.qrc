@@ -1,0 +1,8 @@
+<RCC>
+  <qresource>
+    <file>quit.png</file>
+    <file>download.png</file>
+    <file>mail.png</file>
+    <file>mail-opened.png</file>
+  </qresource>
+</RCC>
