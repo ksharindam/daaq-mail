@@ -4,7 +4,7 @@ Name = Daaq Mail
 Executable Command = daaq
 Package Name = daaq
 Python Module Name = daaq
-Debian Dependency = python-qt4
+Debian Dependency = python-qt4, python-gnomekeyring
 
 Description = A simple mail client written in pyqt4
 Changes :
@@ -38,11 +38,12 @@ Changes :
 #           Multiple Recipients
 #       Clear cached mails
 #       Keep connection alive
+#       Load mails before login
 # FIXME : 
 #       Check if imapserver is created before logout
 #       Different icon for read and unread mails
-#       Clear mail and attachment table when changing a mailbox
+#       
 
 
 
-__version__ = '0.5'
+__version__ = '0.6'

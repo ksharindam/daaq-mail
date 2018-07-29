@@ -8,6 +8,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 
+GMAIL = {'server':'smtp.gmail.com', 'port':587}
 
 
 class SendMailDialog(QDialog, Ui_SendMailDialog):
@@ -60,7 +61,7 @@ class SendMailDialog(QDialog, Ui_SendMailDialog):
     def sendMail(self):
         # Check if sender is empty or invalid
         # Check if msg text and attachments both are empty
-        sendServer = smtplib.SMTP('smtp.gmail.com', 587)
+        sendServer = smtplib.SMTP(GMAIL['server'], GMAIL['port'])
         try:
             sendServer.ehlo()
             sendServer.starttls()

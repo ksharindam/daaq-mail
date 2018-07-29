@@ -4,6 +4,7 @@
 # Import standard python modules
 import os, sys
 import imaplib, email
+from email.header import decode_header
 
 # Import PyQt modules
 from PyQt4 import QtCore
@@ -17,14 +18,20 @@ from widgets import TextViewer, MailItem, MailInfoFrame, splitEmailAddr
 import bodystructure, send_mail
 from keyring import Keyring
 
-SMTP_SERVER = {'server':'smtp.gmail.com', 'port':587}
-IMAP_SERVER = {'server':'imap.gmail.com', 'port':993}
+
 
 DOC_DIR = os.path.expanduser('~/Documents') + '/'
 ACNT_DIR = os.path.expanduser('~/.config/daaq-mail/accounts/')
 
 
 class Window(QMainWindow, Ui_Window):
+    loginRequested = QtCore.pyqtSignal(str, str)
+    selectMailboxRequested = QtCore.pyqtSignal(str)
+    uidListRequested = QtCore.pyqtSignal(str, str)
+    newMailsRequested = QtCore.pyqtSignal(int)
+    bodystructureRequested = QtCore.pyqtSignal(int)
+    mailTextRequested = QtCore.pyqtSignal(int, str, str)
+    deleteRequested = QtCore.pyqtSignal(list)
     def __init__(self):
         QMainWindow.__init__(self)
         QIcon.setThemeName('Adwaita')
@@ -33,7 +40,28 @@ class Window(QMainWindow, Ui_Window):
         self.settings = QtCore.QSettings(1, 0, "daaq-mail","daaq", self)
         self.resize(1024, 714)
         self.show()
+        # create imap client
+        self.thread = QtCore.QThread(self)
+        self.imapClient = GmailImap()
+        self.imapClient.moveToThread(self.thread)
+        self.imapClient.loggedIn.connect(           self.onLogin)
+        self.imapClient.mailboxListLoaded.connect(  self.setMailboxes)
+        self.imapClient.mailboxSelected.connect(    self.onMailboxSelect)
+        self.imapClient.uidsListed.connect(         self.removeDeleted)
+        self.imapClient.insertMailRequested.connect(self.insertNewMail)
+        self.imapClient.bodystructureLoaded.connect(self.setAttachments)
+        self.imapClient.mailTextLoaded.connect(     self.setMailText)
+        self.loginRequested.connect(                self.imapClient.login)
+        self.selectMailboxRequested.connect(        self.imapClient.selectMailbox)
+        self.uidListRequested.connect(              self.imapClient.listUids)
+        self.newMailsRequested.connect(             self.imapClient.getNewMails)
+        self.bodystructureRequested.connect(        self.imapClient.loadBodystructure)
+        self.mailTextRequested.connect(             self.imapClient.loadMailText)
+        self.deleteRequested.connect(               self.imapClient.deleteMails)
+        self.thread.start()
         # init variables
+        self.email_id = ''
+        self.passwd = ''
         self.mailbox = ''
         QtCore.QTimer.singleShot(30, self.setupClient)
 
@@ -69,68 +97,62 @@ class Window(QMainWindow, Ui_Window):
     def setupClient(self):
         """ Login to email server (IMAP) """
         passwords = Keyring('Daaq Mail', 'imap.gmail.com')
-        self.email_id = str(self.settings.value('EmailId', '').toString())
-        if self.email_id == '':
-            self.email_id, ok = QInputDialog.getText(self, 'Email Address', 'Enter Email Address :')
+        email_id = str(self.settings.value('EmailId', '').toString())
+        if email_id == '':
+            email_id, ok = QInputDialog.getText(self, 'Email Address', 'Enter Email Address :')
             if not ok: return
-        if passwords.hasPassword(self.email_id):
-            self.passwd = passwords.getPassword(self.email_id)
+        if passwords.hasPassword(email_id):
+            passwd = passwords.getPassword(email_id)
         else:
-            self.passwd, ok = QInputDialog.getText(self, 'Password',
-                        'Enter Password for email\n'+self.email_id, QLineEdit.Password)
+            passwd, ok = QInputDialog.getText(self, 'Password',
+                        'Enter Password for email\n'+email_id, QLineEdit.Password)
             if ok:
-                self.settings.setValue('EmailId', self.email_id)
-                passwords.setPassword(self.email_id, self.passwd)
+                self.settings.setValue('EmailId', email_id)
+                passwords.setPassword(email_id, passwd)
             else:
                 return
-        self.imapServer = imaplib.IMAP4_SSL(IMAP_SERVER['server'], IMAP_SERVER['port']) # port is 143 for non-ssl servers
-        try:
-            self.imapServer.login(self.email_id, self.passwd)
-            print "Logged in to %s" % self.email_id
-            if not os.path.exists(ACNT_DIR + self.email_id + '/mails'):
-                os.makedirs(str(ACNT_DIR + self.email_id + '/mails'))
-            self.getMailboxes()
-        except imaplib.IMAP4.error:
-            print "Login Failed"
-            sys.exit(1)
+        print 'login requested'
+        self.loginRequested.emit(email_id, passwd)
 
-    def getMailboxes(self):
-        response, mailbox_list = self.imapServer.list()
+    def onLogin(self, email_id, passwd):
+        self.email_id = email_id
+        self.passwd = passwd
+        if not os.path.exists(ACNT_DIR + email_id + '/mails'):
+            os.makedirs(str(ACNT_DIR + email_id + '/mails'))
+
+    def setMailboxes(self, mailbox_list):
         #print mailbox_list
-        if response == 'OK':
-            row = 0
-            for mailbox in mailbox_list:
-                #print mailbox
-                if 'HasChildren' in mailbox: continue
-                mailbox_path = mailbox.split('"/"')[-1].replace('"', '').strip()
-                mailbox_name = mailbox_path.split('/')[-1]
-                #print mailbox_name
-                self.mailboxTable.insertRow(row)
-                item = QTableWidgetItem(mailbox_name)
-                item.mailbox_path = mailbox_path
-                self.mailboxTable.setItem(row, 0, item)
-                row += 1
-        response, total = self.imapServer.select('INBOX')
-        self.mailbox = 'INBOX'
-        self.total_mails = int(total[0])
-        QtCore.QTimer.singleShot(30, self.getMails)
+        row = 0
+        for mailbox in mailbox_list:
+            #print mailbox
+            if 'HasChildren' in mailbox: continue
+            mailbox_path = mailbox.split('"/"')[-1].replace('"', '').strip()
+            mailbox_name = mailbox_path.split('/')[-1]
+            #print mailbox_name
+            self.mailboxTable.insertRow(row)
+            item = QTableWidgetItem(mailbox_name)
+            item.mailbox_path = mailbox_path
+            self.mailboxTable.setItem(row, 0, item)
+            row += 1
 
     def onMailboxClick(self, item):
         mailbox = item.mailbox_path
         if self.mailbox == mailbox : return     # Already selected
-        response, total = self.imapServer.select(mailbox)
-        if response == 'OK':
-            print 'Selected Mailbox :', mailbox
-            self.mailbox = mailbox
-            self.total_mails = int(total[0])
-            self.getMails()
+        self.selectMailboxRequested.emit(mailbox)
 
-    def getMails(self):
-        """ fetch list of mails (with headers) in a mailbox """
-        last_uid = None
+    def onMailboxSelect(self, mailbox, total_mails):
+        if self.mailbox != '' : self.saveMailInfo()
+        self.mailbox = mailbox
+        self.total_mails = total_mails
+        self.clearMailViewer()
         self.mailsTable.clear()
         self.mailsTable.setRowCount(0)
-        mailbox_file = ACNT_DIR + self.email_id + '/%s.xml'%self.mailbox.replace('/', '_')
+        QtCore.QTimer.singleShot(30, self.loadCachedMails)
+
+    def loadCachedMails(self):
+        """ fetch list of mails (with headers) in a mailbox """
+        oldest_uid, latest_uid = None, None
+        mailbox_file = ACNT_DIR + self.email_id + '/%s.xml'%self.mailbox[:].replace('/', '_')
         if os.path.exists(mailbox_file):
             # load cached mails
             doc = QDomDocument()
@@ -140,7 +162,7 @@ class Window(QMainWindow, Ui_Window):
                 doc_file.close()
             mails = doc.firstChild().toElement()
             mail = mails.firstChild()
-            last_uid = mail.toElement().attribute('UID')
+            latest_uid = mail.toElement().attribute('UID')
             i = 0
             while not mail.isNull():
                 e = mail.toElement()
@@ -154,75 +176,64 @@ class Window(QMainWindow, Ui_Window):
                 mail = mail.nextSibling()
                 i += 1
             oldest_uid = mails.lastChild().toElement().attribute('UID')
-        #print 'mails loaded'
-        # remove deleted mails here
-        last_index = 0
-        if last_uid:
-            ok, data = self.imapServer.search(None, '(UID %s:%s)'%(oldest_uid,last_uid)) # check if last uid is valid
-            indexes = data[0].split()
-            uids = []
-            if len(indexes)!=0:
-                last_index = int(indexes[-1])
-                #print 'Last index', last_index
-                oldest_index = int(indexes[0])
-                ok, data = self.imapServer.fetch('%i:%i'%(oldest_index, last_index), '(UID FLAGS)')
-                for each in data:
-                    uids.append(each.split()[2])
-            deleted = 0
-            for i in range(self.mailsTable.rowCount()):
-                item = self.mailsTable.cellWidget(i-deleted,0)
-                if item.uid not in uids:
-                    if item.cached : # delete cached files
-                        msg_struct = ACNT_DIR + self.email_id + '/mails/' + item.msg_id.replace('/', '_') + '.struc'
-                        msg_file = ACNT_DIR + self.email_id + '/mails/' + item.msg_id.replace('/', '_') + '.txt'
-                        if os.path.exists(msg_struct) : os.remove(msg_struct)
-                        if os.path.exists(msg_file) : os.remove(msg_file)
-                    self.mailsTable.removeRow(i-deleted)
-                    deleted += 1
-                    wait(30)
-        #print 'mails deleted'
-        #print last_index, self.total_mails
-        # check here if next index is not greater than total emails
-        if last_index < self.total_mails:   # it fetches even when last_index+1 does not exist
-            ok, data = self.imapServer.fetch('%i:*'%(last_index+1), '(UID FLAGS BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID)])')
-            #total = len(data)/2
-            # create mail itemm for each mail
-            for i, mail_data in enumerate(data):
-                if i%2==1 : continue    # item of odd index does not contain data
-                self.mailsTable.insertRow(0)
-                item = MailItem()
-                item.setDataFromHeader(mail_data)
-                self.mailsTable.setCellWidget(0, 0, item)
-                self.mailsTable.resizeRowsToContents()
+        print 'uids', oldest_uid, latest_uid
+        if latest_uid:
+            self.uidListRequested.emit(oldest_uid, latest_uid)
+        else:
+            self.newMailsRequested.emit(0)
+
+    def removeDeleted(self, uids, last_index):
+        print 'removing deleted mails'
+        deleted = 0
+        for i in range(self.mailsTable.rowCount()):
+            item = self.mailsTable.cellWidget(i-deleted,0)
+            if item.uid not in uids:
+                if item.cached : # delete cached files
+                    msg_struct = ACNT_DIR + self.email_id + '/mails/' + item.msg_id.replace('/', '_') + '.xml'
+                    msg_file = ACNT_DIR + self.email_id + '/mails/' + item.msg_id.replace('/', '_') + '.txt'
+                    if os.path.exists(msg_struct) : os.remove(msg_struct)
+                    if os.path.exists(msg_file) : os.remove(msg_file)
+                self.mailsTable.removeRow(i-deleted)
+                deleted += 1
                 wait(30)
+        self.newMailsRequested.emit(last_index)
+        #print 'mails deleted'
+
+    def insertNewMail(self, sender, subject, uid, msg_id, date, cached, seen):
+        #print 'insert new mail', uid
+        self.mailsTable.insertRow(0)
+        item = MailItem()
+        item.setData(sender, subject, uid, msg_id, date, cached, seen)
+        self.mailsTable.setCellWidget(0, 0, item)
+        self.mailsTable.resizeRowsToContents()
+        wait(30)
 
     def loadMail(self, row, column):
         """ Fetch body of mail and show them in viewer widget"""
         rows = self.mailsTable.selectionModel().selectedRows()
         if len(rows)>1 : return     # return when multiple is selected
+        self.clearMailViewer()
         self.mailInfoFrame.setData(self.mailsTable.cellWidget(row, column))
-        msg_id = self.mailInfoFrame.msg_id
-        self.textViewer.clear()
-        self.tableWidget.clear()
-        self.tableWidget.setRowCount(0)
-        self.tableWidget.hide()
         wait(30)
-        #ok, data = self.imapServer.fetch(self.total_mails-row, '(UID BODY.PEEK[HEADER])')
-        #print data[0][1] # print header
+        msg_id = self.mailInfoFrame.msg_id.replace('/', '_')
         # Some msg_id contains / character
-        msg_struct = ACNT_DIR + self.email_id + '/mails/' + msg_id.replace('/', '_') + '.struc'
+        msg_struct = ACNT_DIR + self.email_id + '/mails/' + msg_id + '.xml'
         if os.path.exists(msg_struct):
-            doc = QDomDocument()
-            doc_file = QtCore.QFile(msg_struct)
-            if doc_file.open(QtCore.QIODevice.ReadOnly):
-                doc.setContent(doc_file)
-                doc_file.close()
+            with open(msg_struct, 'r') as doc_file:
+                xml_doc = doc_file.read()
+            self.setAttachments(xml_doc)
         else:
-            ok, structure = self.imapServer.fetch(self.total_mails-row, '(BODYSTRUCTURE)')
-            doc = bodystructure.bodystructureToXml(structure[0])
+            self.bodystructureRequested.emit(self.total_mails-row)
+
+    def setAttachments(self, xml_doc): # bodystructure dom
+        msg_id = self.mailInfoFrame.msg_id.replace('/', '_')
+        # save bodystructure
+        msg_struct = ACNT_DIR + self.email_id + '/mails/' + msg_id + '.xml'
+        if not os.path.exists(msg_struct):
             with open(msg_struct, 'w') as fd:
-                fd.write(doc.toString())
-        text_part_num, enc, attachments = getAttachments(doc)
+                fd.write(unicode(xml_doc))
+        # get attachments
+        text_part_num, enc, attachments = getAttachments(xml_doc)
         for [part_num, filename, file_size] in attachments:
             ro = self.tableWidget.rowCount()
             self.tableWidget.insertRow(ro)
@@ -233,21 +244,23 @@ class Window(QMainWindow, Ui_Window):
         if self.tableWidget.rowCount() > 0:
             self.tableWidget.show()
         # load html body
-        msg_file = ACNT_DIR + self.email_id + '/mails/' + msg_id.replace('/', '_') + '.txt'
+        msg_file = ACNT_DIR + self.email_id + '/mails/' + msg_id + '.txt'
         if os.path.exists(msg_file):
             with open(msg_file, 'rb') as fd:
                 html = fd.read()
+            self.setMailText(unicode(html, 'utf8')) # convert byte string to unicode
         else:
-            ok, data = self.imapServer.fetch(self.total_mails-row, '(BODY[%s])'%text_part_num)#RFC822
-            msg_data = data[0][1]
-            #print msg_data
-            msg = email.message_from_string(msg_data)
-            msg.add_header('Content-Transfer-Encoding', str(enc)) # encoding is obtained from bodystructure
-            html = msg.get_payload(decode=True)
+            row = self.mailsTable.selectionModel().selectedRows()[0].row()
+            self.mailTextRequested.emit(self.total_mails-row, text_part_num, enc)
+            self.mailsTable.cellWidget(row, 0).cached = True
+
+    def setMailText(self, html):
+        msg_id = self.mailInfoFrame.msg_id.replace('/', '_')
+        msg_file = ACNT_DIR + self.email_id + '/mails/' + msg_id + '.txt'
+        if not os.path.exists(msg_file):
             with open(msg_file, 'wb') as fd:
-                fd.write(html)
-            self.mailsTable.cellWidget(row, column).cached = True
-        self.textViewer.setText(unicode(html, 'utf8'))#QtCore.QString.fromUtf8(html)
+                fd.write(unicode(html).encode('utf8')) # save text file in byte string
+        self.textViewer.setText(html)
 
     def replyMail(self):
         name, reply_to = splitEmailAddr(self.mailInfoFrame.sender)
@@ -258,15 +271,8 @@ class Window(QMainWindow, Ui_Window):
 
     def deleteMail(self):
         rows = self.mailsTable.selectionModel().selectedRows()
-        for row in rows:
-            uid = self.mailsTable.cellWidget(row.row(), 0).uid
-            self.imapServer.uid('STORE', uid, '+X-GM-LABELS', '\\Trash')  # For gmail only
-
-        response, total = self.imapServer.select(self.mailbox)
-        if response == 'OK':
-            self.total_mails = int(total[0])
-        self.getMails()
-
+        uid_list = [self.mailsTable.cellWidget(row.row(), 0).uid for row in rows]
+        self.deleteRequested.emit(uid_list)
 
     def printMail(self):
         printer = QPrinter(mode=QPrinter.HighResolution)
@@ -282,6 +288,13 @@ class Window(QMainWindow, Ui_Window):
     def newMail(self):
         dialog = send_mail.SendMailDialog(self.email_id, self.passwd, self)
         dialog.exec_()
+
+    def clearMailViewer(self):
+        self.mailInfoFrame.clear()
+        self.textViewer.clear()
+        self.tableWidget.clear()
+        self.tableWidget.setRowCount(0)
+        self.tableWidget.hide()
 
     def saveMailInfo(self):
         # Cache mails in xml file
@@ -299,21 +312,133 @@ class Window(QMainWindow, Ui_Window):
             mail.setAttribute('Cached', item.cached)
             root.appendChild(mail)
 
-        mailbox_file = ACNT_DIR + self.email_id + '/%s.xml'%self.mailbox.replace('/', '_')
+        mailbox_file = ACNT_DIR + self.email_id + '/%s.xml'%self.mailbox[:].replace('/', '_')
         with open(mailbox_file, 'w') as doc_file:
             doc_file.write(doc.toString())
 
     def closeEvent(self, ev):
         self.saveMailInfo()
-        self.imapServer.close()
-        self.imapServer.logout()
+        loop = QtCore.QEventLoop()
+        self.thread.finished.connect(loop.quit)
+        self.thread.quit()
+        loop.exec_()
         QMainWindow.closeEvent(self, ev)
 
 
+class GmailImap(QtCore.QObject):
+    loggedIn = QtCore.pyqtSignal(str, str)
+    mailboxListLoaded = QtCore.pyqtSignal(list)
+    mailboxSelected = QtCore.pyqtSignal(str, int)
+    uidsListed = QtCore.pyqtSignal(list, int)
+    insertMailRequested = QtCore.pyqtSignal(unicode, unicode, str, str, str, bool, bool)
+    bodystructureLoaded = QtCore.pyqtSignal(unicode)
+    mailTextLoaded = QtCore.pyqtSignal(unicode)
+    def __init__(self):
+        QtCore.QObject.__init__(self)
+        self.email_id = ''
+        self.passwd = ''
+        self.total_mails = 0
 
+    def login(self, email_id, passwd):
+        print 'try login'
+        try:
+            self.server = imaplib.IMAP4_SSL('imap.gmail.com', 993)
+            self.server.login(email_id, passwd)
+            self.email_id = email_id
+            self.passwd = passwd
+            self.loggedIn.emit(email_id, passwd)
+            print 'logged in as', email_id
+            self.getMailboxes()
+            self.selectMailbox('INBOX')
+        except:
+            print "Login Failed"
 
-def getAttachments(doc):
+    def getMailboxes(self):
+        print 'get mailboxes'
+        response, mailbox_list = self.server.list()
+        if response == 'OK':
+            self.mailboxListLoaded.emit(mailbox_list)
+
+    def selectMailbox(self, mailbox):
+        print 'mailbox selected :', mailbox
+        response, total = self.server.select(str(mailbox))
+        if response == 'OK':
+            self.mailbox = mailbox
+            self.total_mails = int(total[0])
+            self.mailboxSelected.emit(mailbox, self.total_mails)
+
+    def listUids(self, oldest_uid, latest_uid):
+        print 'list uids from', oldest_uid, 'to', latest_uid
+        # remove deleted mails here
+        if not latest_uid: return
+        ok, data = self.server.search(None, '(UID %s:%s)'%(oldest_uid,latest_uid)) # check if last uid is valid
+        indexes = data[0].split()
+        last_index = 0
+        uids = []
+        if len(indexes)!=0:
+            last_index = int(indexes[-1])
+            #print 'Last index', last_index
+            oldest_index = int(indexes[0])
+            ok, data = self.server.fetch('%i:%i'%(oldest_index, last_index), '(UID FLAGS)')
+            for each in data:
+                uids.append(each.split()[2])
+        self.uidsListed.emit(uids, last_index)
+
+    def getNewMails(self, last_index):
+        print 'get new mails'
+        if last_index >= self.total_mails: return # return when last_index+1 does not exist
+        ok, mail_data = self.server.fetch('%i:*'%(last_index+1),
+                      '(UID FLAGS BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID)])')
+        #total = len(data)/2
+        # create mail itemm for each mail
+        for i, data in enumerate(mail_data):
+            if i%2==1 : continue    # item of odd index does not contain data
+            # data[0][0] contains flags, uid and data[0][1] contains header
+            header = email.message_from_string(data[1])
+            sender, enc = decode_header(header['from'])[0]
+            subject, enc = decode_header(header['subject'])[0]
+            if enc:
+                subject = subject.decode(enc)
+            subject = subject.split('\n')[0]
+            uid = data[0].split()[2]    # Have to use regex later
+            msg_id = header['message-id']
+            date = header['date']
+            cached = False
+            seen = True if '\Seen' in data[0] else False
+            self.insertMailRequested.emit(sender, subject, uid, msg_id, date, cached, seen)
+
+    def loadBodystructure(self, index):
+        ok, structure = self.server.fetch(index, '(BODYSTRUCTURE)')
+        doc = bodystructure.bodystructureToXml(structure[0])
+        self.bodystructureLoaded.emit(doc.toString())
+
+    def loadMailText(self, index, text_part_num, enc):
+        #ok, data = self.imapServer.fetch(self.total_mails-row, '(UID BODY.PEEK[HEADER])')
+        #print data[0][1] # print header
+        ok, data = self.server.fetch(index, '(BODY[%s])'%text_part_num)#RFC822
+        msg_data = data[0][1]
+        #print msg_data
+        msg = email.message_from_string(msg_data)
+        msg.add_header('Content-Transfer-Encoding', str(enc)) # encoding is obtained from bodystructure
+        html = msg.get_payload(decode=True)
+        self.mailTextLoaded.emit(unicode(html, 'utf8'))
+
+    def deleteMails(self, uids):
+        for uid in uids:
+            self.server.uid('STORE', uid, '+X-GM-LABELS', '\\Trash')
+        self.selectMailbox(self.mailbox)
+
+    def keepAlive(self):
+        pass
+
+    def close(self):
+        # TODO : use this to logout when closing window
+        self.server.close()
+
+def getAttachments(xml_doc):
     # Get text part and attachments
+    doc = QDomDocument()
+    doc.setContent(xml_doc)
     root = doc.firstChild().toElement()
     alt_part = root.elementsByTagName('alternative').item(0)
     parts = root.childNodes()

@@ -99,22 +99,6 @@ class MailItem(QWidget):
         self.mailSeen(self.seen)
         self.subjectLabel.setText(self.subject)
 
-    def setDataFromHeader(self, data):
-        # data[0][0] contains flags, uid and data[0][1] contains header
-        self.seen = True if '\Seen' in data[0] else False
-        header = email.message_from_string(data[1])
-        self.sender, enc = decode_header(header['from'])[0]
-        subject, enc = decode_header(header['subject'])[0]
-        if enc:
-            subject = subject.decode(enc)
-        self.subject = subject.split('\n')[0]
-        self.uid = data[0].split()[2]    # Have to use regex later
-        self.msg_id = header['message-id']
-        self.date = header['date']
-        self.cached = False
-        self.mailSeen(self.seen)
-        self.subjectLabel.setText(self.subject)
-
     def mailSeen(self, seen):
         name, addr = splitEmailAddr(self.sender)
         if seen:
@@ -160,6 +144,11 @@ class MailInfoFrame(QWidget):
         setElidedText(self.dateLabel, fromRfc2822(cellWidget.date))
         setElidedText(self.subjectLabel, '<b>%s</b>' % self.subject)
 
+    def clear(self):
+        self.sender, self.msg_id, self.subject = '', '', ''
+        self.fromLabel.clear()
+        self.dateLabel.clear()
+        self.subjectLabel.clear()
 
 re_mail_id = re.compile('(.*) <([^ ]+)>', re.I)
 
