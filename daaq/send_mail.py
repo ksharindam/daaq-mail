@@ -21,14 +21,14 @@ class SendMailDialog(QDialog, Ui_SendMailDialog):
         self.attachFileButton.clicked.connect(self.addAttachment)
         self.sendButton.clicked.connect(self.sendMail)
         self.cancelButton.clicked.connect(self.reject)
-        self.email_id = email_id
+        self.email_id = unicode(email_id)
         self.passwd = passwd
         self.attachments = []
         self.reply_to = False
 
     def replyTo(self, reply_to, msg_id, subject):
         self.reply_to = reply_to
-        self.reference_msg = msg_id
+        self.reference_msg = unicode(msg_id)
         self.recipientEdit.setText(reply_to)
         if subject[:4].lower() not in ['re: ', 're :'] : subject = 'Re: ' + subject
         self.subjectEdit.setText(subject)
@@ -88,11 +88,10 @@ class SendMailDialog(QDialog, Ui_SendMailDialog):
             attachment = MIMEBase('application','octet-stream')
             with open(filename, 'rb') as fd:
                 data = fd.read()
-            attachment.set_payload(data)
+                attachment.set_payload(data)
             email.encoders.encode_base64(attachment)
             attachment.add_header('Content-Disposition','attachment; filename="%s"' % os.path.basename(filename))
             msg.attach(attachment)
-
         sendServer.sendmail(self.email_id, [unicode(self.recipientEdit.text())], msg.as_string())
         sendServer.quit()
         # Show success/failure msg here

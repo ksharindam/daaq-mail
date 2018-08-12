@@ -13,6 +13,10 @@
   <property name="windowTitle">
    <string>Daaq Mail</string>
   </property>
+  <property name="windowIcon">
+   <iconset resource="resources.qrc">
+    <normaloff>:/mail.png</normaloff>:/mail.png</iconset>
+  </property>
   <widget class="QWidget" name="centralwidget">
    <layout class="QHBoxLayout" name="horizontalLayout">
     <property name="spacing">
@@ -151,7 +155,8 @@
   </widget>
   <action name="newMailAction">
    <property name="icon">
-    <iconset theme="mail-message-new"/>
+    <iconset resource="resources.qrc">
+     <normaloff>:/write-mail.png</normaloff>:/write-mail.png</iconset>
    </property>
    <property name="text">
     <string>Compose New</string>
@@ -165,7 +170,9 @@
   </action>
   <action name="printAction">
    <property name="icon">
-    <iconset theme="document-print"/>
+    <iconset theme="document-print">
+     <normaloff/>
+    </iconset>
    </property>
    <property name="text">
     <string>Print</string>
@@ -179,7 +186,9 @@
   </action>
   <action name="deleteAction">
    <property name="icon">
-    <iconset theme="edit-delete"/>
+    <iconset theme="edit-delete">
+     <normaloff/>
+    </iconset>
    </property>
    <property name="text">
     <string>Delete</string>
@@ -190,7 +199,9 @@
   </action>
   <action name="replyAction">
    <property name="icon">
-    <iconset theme="mail-reply-sender"/>
+    <iconset theme="mail-reply-sender">
+     <normaloff/>
+    </iconset>
    </property>
    <property name="text">
     <string>Reply</string>

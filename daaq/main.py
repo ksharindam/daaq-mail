@@ -9,12 +9,14 @@ from email.header import decode_header
 # Import PyQt modules
 from PyQt4 import QtCore
 from PyQt4.QtGui import ( QApplication, QMainWindow, QIcon, QTableWidgetItem, QHeaderView,
-        QWidget, QLineEdit, QInputDialog, QMessageBox, QPrinter, QPrintPreviewDialog )
+        QWidget, QLineEdit, QInputDialog, QMessageBox, QPrinter, QPrintPreviewDialog,
+        QToolButton, QMenu
+)
 from PyQt4.QtXml import QDomDocument
 
 # Import created modules
 from ui_window import Ui_Window
-from widgets import TextViewer, MailItem, MailInfoFrame, splitEmailAddr
+from widgets import TextViewer, MailItem, MailInfoFrame, splitEmailAddr, AddAccountDialog, AccountManagerDialog
 import bodystructure, send_mail
 from keyring import Keyring
 
@@ -37,8 +39,10 @@ class Window(QMainWindow, Ui_Window):
         QMainWindow.__init__(self)
         QIcon.setThemeName('Adwaita')
         self.setupUi(self)
-        self.initUi()
         self.settings = QtCore.QSettings(1, 0, "daaq-mail","daaq", self)
+        self.emails = [unicode(x) for x in self.settings.value('Emails', []).toStringList()]
+        self.types = [unicode(x) for x in self.settings.value('Types', []).toStringList()]
+        self.initUi()
         self.resize(1024, 714)
         self.show()
         # create imap client
@@ -66,9 +70,23 @@ class Window(QMainWindow, Ui_Window):
         self.email_id = ''
         self.passwd = ''
         self.mailbox = ''
+        self.total_mails = 0
         QtCore.QTimer.singleShot(30, self.setupClient)
 
     def initUi(self):
+        self.toolMenu = QMenu('Menu', self)
+        self.accountsMenu = QMenu('Select Account', self)
+        self.accountsMenu.triggered.connect(self.accountSelected)
+        self.refreshAccountsMenu()
+        self.toolMenu.addMenu(self.accountsMenu)
+        self.toolMenu.addAction('Manage Accounts', self.manageAccounts)
+
+        self.menuBtn = QToolButton(self)
+        self.menuBtn.setIcon(QIcon(':/menu.png'))
+        self.menuBtn.setPopupMode(QToolButton.InstantPopup)
+        self.menuBtn.setMenu(self.toolMenu)
+        self.toolBar.insertWidget(self.newMailAction, self.menuBtn)
+
         spacer = QWidget(self)
         spacer.setSizePolicy(1|2|4,1|4)
         self.toolBar.insertWidget(self.quitAction, spacer)
@@ -100,21 +118,16 @@ class Window(QMainWindow, Ui_Window):
 
     def setupClient(self):
         """ Login to email server (IMAP) """
-        passwords = Keyring('Daaq Mail', 'imap.gmail.com')
         email_id = str(self.settings.value('EmailId', '').toString())
         if email_id == '':
-            email_id, ok = QInputDialog.getText(self, 'Email Address', 'Enter Email Address :')
-            if not ok: return
-        if passwords.hasPassword(email_id):
-            passwd = passwords.getPassword(email_id)
-        else:
-            passwd, ok = QInputDialog.getText(self, 'Password',
-                        'Enter Password for email\n'+email_id, QLineEdit.Password)
-            if ok:
-                self.settings.setValue('EmailId', email_id)
-                passwords.setPassword(email_id, passwd)
-            else:
-                return
+            QMessageBox.warning(self, 'No Account Selected !',
+                                    'Please Click on Menu and Select an account to login')
+            return
+        kr = Keyring()
+        passwd = kr.getPassword(email_id)
+        if not passwd :
+            QMessageBox.critical(self, 'Not Found !', 'Password not found for the email %s'%email_id)
+            return
         print 'login requested'
         self.loginRequested.emit(email_id, passwd)
 
@@ -300,6 +313,27 @@ class Window(QMainWindow, Ui_Window):
         dialog = send_mail.SendMailDialog(self.email_id, self.passwd, self)
         dialog.exec_()
 
+    def accountSelected(self, account):
+        #print account.text(), self.email_id
+        if str(account.text()) == self.email_id : return
+        self.settings.setValue('EmailId', account.text())
+        self.setupClient()
+
+    def manageAccounts(self):
+        dialog = AccountManagerDialog(self.emails, self.types, self)
+        dialog.exec_()
+        self.emails, self.types = dialog.emails, dialog.types
+        self.settings.setValue('Emails', self.emails)
+        self.settings.setValue('Types', self.types)
+        if self.emails == []:
+            self.settings.setValue('EmailId', '')
+        self.refreshAccountsMenu()
+
+    def refreshAccountsMenu(self):
+        self.accountsMenu.clear()
+        for each in self.emails:
+            self.accountsMenu.addAction(each)
+
     def clearMailViewer(self):
         self.mailInfoFrame.clear()
         self.textViewer.clear()
@@ -449,7 +483,7 @@ class GmailImap(QtCore.QObject):
         msg = email.message_from_string(data[0][1])
         msg.add_header('Content-Transfer-Encoding', str(enc))
         attach = msg.get_payload(decode=True)
-        filename = os.path.expanduser('~/Downloads')+ '/' + filename 
+        filename = autoRename(os.path.expanduser('~/Downloads')+ '/' + filename)
         with open(filename, 'wb') as fd:
             fd.write(attach)
 
@@ -511,6 +545,14 @@ def formatFileSize(byte):
             return '%s B' % byte
     except:
         return byte
+
+def autoRename(filename):
+    name, ext = os.path.splitext(unicode(filename))
+    i = 0
+    while 1:
+        if not os.path.exists(unicode(filename)) : return filename
+        i+=1
+        filename = name + str(i) + ext
 
 def main():
     app = QApplication(sys.argv)

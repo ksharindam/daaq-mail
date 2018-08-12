@@ -7,8 +7,11 @@ from PyQt4 import QtCore
 from PyQt4.QtGui import ( QWidget, QTextEdit, QMessageBox, QGridLayout, QLabel, QSizePolicy,
     QPixmap, QFontMetrics,
 )
+from PyQt4.QtGui import ( QDialog, QComboBox, QCheckBox, QLineEdit, QHBoxLayout, QPushButton,
+    QTableWidget, QTableWidgetItem
+)
 from PyQt4.QtNetwork import QNetworkAccessManager, QNetworkRequest
-
+from keyring import Keyring
 
 class ResourceLoader(QtCore.QThread):
     ''' loads images of qtextedit in separate thread '''
@@ -153,6 +156,7 @@ class MailInfoFrame(QWidget):
 re_mail_id = re.compile('(.*) <([^ ]+)>', re.I)
 
 def splitEmailAddr(addr):
+    addr = unicode(addr)
     m = re_mail_id.search(addr)
     if m:
         name = m.group(1)
@@ -170,3 +174,92 @@ def fromRfc2822(date):
     py_time = mktime_tz(parsedate_tz(str(date)))
     return time.strftime("%d %b  %Y,  %I:%M %P", time.localtime(py_time))
 
+
+class AccountManagerDialog(QDialog):
+    def __init__(self, emails, types, parent):
+        self.emails, self.types = emails, types
+        QDialog.__init__(self, parent)
+        self.resize(560, 350)
+        self.gridLayout = QGridLayout(self)
+        self.tableWidget = QTableWidget(0,2, self)
+        self.tableWidget.setAlternatingRowColors(True)
+        self.tableWidget.setSelectionBehavior(1) # Rows
+        self.tableWidget.setSelectionMode(1) # Single
+        self.tableWidget.horizontalHeader().setResizeMode(0, 1) # 1 = Stretch
+        self.tableWidget.setHorizontalHeaderLabels(['Email', 'Type'])
+        self.addBtn = QPushButton('+', self)
+        self.removeBtn = QPushButton('-', self)
+        self.closeBtn = QPushButton('Close', self)
+        self.spacer = QWidget(self)
+        self.spacer.setSizePolicy(1|2|4,1|4)
+        self.gridLayout.addWidget(self.tableWidget, 0,0,1,4)
+        self.gridLayout.addWidget(self.addBtn, 1,0,1,1)
+        self.gridLayout.addWidget(self.removeBtn, 1,1,1,1)
+        self.gridLayout.addWidget(self.spacer, 1,2,1,1)
+        self.gridLayout.addWidget(self.closeBtn, 1,3,1,1)
+        self.addBtn.clicked.connect(self.addAccount)
+        self.removeBtn.clicked.connect(self.removeAccount)
+        self.closeBtn.clicked.connect(self.accept)
+        for i in range(len(self.emails)):
+            self.tableWidget.insertRow(i)
+            self.tableWidget.setItem(i,0, QTableWidgetItem(emails[i]))
+            self.tableWidget.setItem(i,1, QTableWidgetItem(types[i]))
+
+    def addAccount(self):
+        dialog = AddAccountDialog(self)
+        if dialog.exec_() != QDialog.Accepted: return
+        email = unicode(dialog.emailEdit.text())
+        passwd = unicode(dialog.passwordEdit.text())
+        ac_type = unicode(dialog.typeCombo.currentText())
+        self.tableWidget.insertRow(0)
+        self.tableWidget.setItem(0,0, QTableWidgetItem(email))
+        self.tableWidget.setItem(0,1, QTableWidgetItem(ac_type))
+        self.emails.insert(0, email)
+        self.types.insert(0, ac_type)
+        kr = Keyring()
+        kr.setPassword(email, passwd)
+
+    def removeAccount(self):
+        row = self.tableWidget.selectionModel().selectedRows()[0].row()
+        email = self.tableWidget.item(row,0).text()
+        kr = Keyring()
+        kr.deletePassword(email)
+        self.tableWidget.removeRow(row)
+        self.emails.pop(row)
+        self.types.pop(row)
+
+
+class AddAccountDialog(QDialog):
+    def __init__(self, parent):
+        QDialog.__init__(self, parent)
+        self.setWindowTitle('Add Account')
+        self.resize(400, 160)
+        self.gridLayout = QGridLayout(self)
+        self.typeCombo = QComboBox(self)
+        self.typeCombo.addItem('Gmail')
+        self.label = QLabel('Type :', self)
+        self.label1 = QLabel('Email :', self)
+        self.label2 = QLabel('Password :', self)
+        self.emailEdit = QLineEdit(self)
+        self.passwordEdit = QLineEdit(self)
+        self.passwordEdit.setEchoMode(QLineEdit.Password)
+        self.showPasswordBtn = QCheckBox('Show', self)
+        self.cancelBtn = QPushButton('Cancel', self)
+        self.saveBtn = QPushButton('Save', self)
+        self.gridLayout.addWidget(self.label, 0,0,1,1)
+        self.gridLayout.addWidget(self.typeCombo, 0,1,1,2)
+        self.gridLayout.addWidget(self.label1, 1,0,1,1)
+        self.gridLayout.addWidget(self.emailEdit, 1,1,1,3)
+        self.gridLayout.addWidget(self.label2, 2,0,1,1)
+        self.gridLayout.addWidget(self.passwordEdit, 2,1,1,2)
+        self.gridLayout.addWidget(self.showPasswordBtn, 2,3,1,1)
+        self.gridLayout.addWidget(self.cancelBtn, 3,2,1,1)
+        self.gridLayout.addWidget(self.saveBtn, 3,3,1,1)
+        #self.gridLayout.setRowStretch(2, 1)
+        self.showPasswordBtn.clicked.connect(self.showPassword)
+        self.cancelBtn.clicked.connect(self.reject)
+        self.saveBtn.clicked.connect(self.accept)
+
+    def showPassword(self, checked):
+        mode = QLineEdit.Normal if checked else QLineEdit.Password
+        self.passwordEdit.setEchoMode(mode)
